@@ -23,8 +23,8 @@ namespace TennisEmulator
 
     public abstract class CompositMatchUnit: MatchUnit, IEventHandler<MatchUnit, MatchUnitFinishedEvent>
     {
-        protected List<MatchUnit> SubUnits;
-        protected MatchUnit CurrentSubUnit => SubUnits?.LastOrDefault();
+        public List<MatchUnit> SubUnits
+        { get; protected set; }
 
         public CompositMatchUnit()
         {
@@ -33,14 +33,18 @@ namespace TennisEmulator
 
         public void Handle(MatchUnit source, MatchUnitFinishedEvent e)
         {
-            if (source == this.CurrentSubUnit)
+            MatchTeam team = this.MatchTeams.Where(t => t.Player == e.WinningTeam.Player).FirstOrDefault();
+            if (team != null)
             {
-                MatchTeam team = this.MatchTeams.Where(t => t.Player == e.WinningTeam.Player).FirstOrDefault();
-                if (team!=null)
-                {
-                    this.AddScore(team);
-                }
+                this.AddScore(team);
             }
+        }
+
+        protected void PlayNextSubUnit(MatchUnit next)
+        {
+            this.SubUnits.Add(next);
+            DI.Resolver.Resolve<IEventDispatcher>().AddHandler(next, this);
+            next.Play();
         }
     }
 
@@ -64,27 +68,53 @@ namespace TennisEmulator
 
         public override void AddScore(MatchTeam team)
         {
-            throw new NotImplementedException();
+            team.Score += 1;
+            if(team.Score == this.WinScore)
+            {
+                DI.Resolver.Resolve<IEventDispatcher>().Dispatch(this, new MatchUnitFinishedEvent(team));
+                DI.Resolver.Resolve<IEventDispatcher>().CleanupSource(this);
+            }
+            else
+            {
+                this.Play();
+            }           
         }
 
         public override MatchTeam GetWinTeam()
         {
-            throw new NotImplementedException();
+            return this.MatchTeams.FirstOrDefault(t => t.Score == this.WinScore);
         }
 
         public override void Play()
         {
-            throw new NotImplementedException();
+            int intialServingPlayer = new Random().Next() % 2;
+            Set previousSet = this.SubUnits.LastOrDefault() as Set;
+            if(previousSet!=null)
+            {
+                Game lastGame = previousSet.SubUnits.LastOrDefault() as Game;
+                if(lastGame != null)
+                {
+                    intialServingPlayer = Game.SwitchServingPlayer(lastGame.ServingPlayer);
+                }
+            }
+            this.PlayNextSubUnit(new Set(this.MatchTeams, intialServingPlayer));
         }
     }
 
-    public class Set : CompositMatchUnit, IEventHandler<Game, MatchUnitFinishedEvent>
+    public class Set : CompositMatchUnit
     {
-        public Set(List<Player> players)
+        protected int InitialServingPlayer
         {
-            foreach (Player p in players)
+            get;private set;
+        }
+
+        public Set(List<MatchTeam> teams, int servingPlayer)
+        {
+            this.InitialServingPlayer = servingPlayer;
+
+            foreach (MatchTeam t in teams)
             {
-                this.MatchTeams.Add(new MatchTeam(p));
+                this.MatchTeams.Add(new MatchTeam(t.Player));
             }
         }
 
@@ -124,25 +154,19 @@ namespace TennisEmulator
         public override void Play()
         {
             Game lastGame = this.SubUnits.LastOrDefault() as Game;
-            Game newGame = null;
+            int servingPlayer = lastGame != null ? Game.SwitchServingPlayer(lastGame.ServingPlayer) : this.InitialServingPlayer;
+            Game newGame;
+
             if (this.MatchTeams[0].Score == 6 && this.MatchTeams[0].Score == 6)
             {
-                newGame = new TieBreaker(this.MatchTeams, Game.SwitchServingPlayer(lastGame.ServingPlayer));
+                newGame = new TieBreaker(this.MatchTeams, servingPlayer);
             }
             else
             {
-                newGame = new Game(this.MatchTeams, Game.SwitchServingPlayer(lastGame.ServingPlayer));
+                newGame = new Game(this.MatchTeams, servingPlayer);
             }
 
-            this.SubUnits.Add(newGame);
-            DI.Resolver.Resolve<IEventDispatcher>().AddHandler<Game, MatchUnitFinishedEvent>(newGame, this);
-            newGame.Play();
-        }
-
-        public void Handle(Game source, MatchUnitFinishedEvent e)
-        {
-            MatchTeam team = this.MatchTeams.FirstOrDefault(t => t.Player == e.WinningTeam.Player);
-            this.AddScore(team);
+            this.PlayNextSubUnit(newGame);
         }
 
         private bool IsWin(MatchTeam team, MatchTeam otherTeam)
